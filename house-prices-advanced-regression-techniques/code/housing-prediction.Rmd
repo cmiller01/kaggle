@@ -98,22 +98,29 @@ df <- prep_data(df)
 # initial split on log price (evaluation is based on RMSE of log prices)
 train_idx <- createDataPartition(df$LogSalePrice, p = 0.7, list=FALSE)
 # drop the raw SalePrice column
-train <- subset(df[train_idx,],select=-SalePrice)
-test <- subset(df[-train_idx,],select=-SalePrice)
+train <- subset(df[train_idx,],select=-c(SalePrice,Id))
+test <- subset(df[-train_idx,],select=-c(SalePrice,Id))
 
-rf_fit <- train(LogSalePrice ~ ., data=train, method = "ranger", metric= "RMSE")
-xg_fit <- train(LogSalePrice ~ ., data=train, method = "xgbLinear", metric= "RMSE")
+# original submission
+# 
+# rf_fit <- train(LogSalePrice ~ ., data=train, method = "ranger", metric= "RMSE")
+# rf_pred <- predict(rf_fit,test)
+# postResample(pred=rf_pred,obs=test$LogSalePrice)
 
-# not too bad
-rf_pred <- predict(rf_fit,test)
-postResample(pred=rf_pred,obs=test$LogSalePrice)
+# try gbm
+gbm_fit <- train(LogSalePrice ~ ., data=train, method = "gbm", verbose=FALSE, metric= "RMSE", trControl = trainControl(method = "cv",number=5))
+gbm_pred <- predict(gbm_fit,test)
+postResample(pred=gbm_pred,obs=test$LogSalePrice)
 
-# also not bad...
-#xg_pred <- predict(xg_fit,test)
-#postResample(pred=xg_pred,obs=test$LogSalePrice)
+# try model trees
+# model trees seems best
+model_trees_fit <- train(LogSalePrice ~ ., data=train, method = "cubist", metric= "RMSE", trControl = trainControl(method = "cv",number=5))
+model_trees_pred <- predict(model_trees_fit,test)
+postResample(pred=model_trees_pred,obs=test$LogSalePrice)
+
 ```
 
-### Use RF Kitchen Sink model
+### Use Model Trees Kitchen Sink model
 ```{r generate_prediction}
 test <- read.csv(file='../input/test.csv')
 test <- prep_data(test)
@@ -141,14 +148,14 @@ test$SaleType[is.na(test$SaleType)] <- "WD"
 # deal with new factor level as hack for now
 test$MSSubClass[test$MSSubClass=="150"] <- "160"
 
-train <- subset(df,select=-SalePrice)
-rf_fit <- train(LogSalePrice ~ ., data=train, method = "ranger", metric= "RMSE")
-rf_pred <- predict(rf_fit,test)
+# use model trees w/cross validation
+train <- subset(df,select=-c(SalePrice,Id))
+model_tree_fit <- train(LogSalePrice ~ ., data=train, method = "cubist", metric= "RMSE", trControl=trainControl(method = "cv",number=10))
+model_tree_pred <- predict(model_tree_fit,test)
 
 # prediction back to dollars
-final <- exp(rf_pred)
+final <- exp(model_tree_pred)
 submission <- data.frame(Id=test$Id,SalePrice=final)
-write_csv(submission,path='submission_1.csv')
-
+write_csv(submission,path='submission_2.csv')
 
 ```
