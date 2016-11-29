@@ -1,0 +1,227 @@
+---
+title: "housing-prediction"
+author: "Christian"
+date: "November 25, 2016"
+output: html_document
+---
+
+## Prepare dataset
+```{r load_libraries, warning=FALSE, message=FALSE}
+library(plyr)
+library(dplyr)
+library(readr)
+library(ggplot2)
+library(caret)
+set.seed(2016)
+```
+
+```{r load_data}
+# read training data, characters as factors is helpful
+df <- read.csv(file='../input/train.csv')
+```
+
+## Explore data
+~~Abbreviated~~ Missing section thanks to [AiO](https://www.kaggle.com/notaapple) for a [great exploratory analysis](https://www.kaggle.com/notaapple/house-prices-advanced-regression-techniques/detailed-exploratory-data-analysis-using-r/code) of this dataset. As well as [Angela](https://www.kaggle.com/xchmiao) for more [exploration](https://www.kaggle.com/xchmiao/house-prices-advanced-regression-techniques/detailed-data-exploration-in-python). 
+Borrowing learnings from them!
+```{r explore_data}
+Hmisc::describe(df)
+# Plot response variable--relatively skewed so normalize with log
+hist(df$SalePrice)
+hist(log(df$SalePrice))
+```
+
+```{r prep_data}
+
+prep_data <- function(df) {
+  # preps data frame, mostly by dealing with NAs for now
+  # transform sale price to logs
+  
+  # SubClass is more of a factor than numeric
+  df$MSSubClass <- as.factor(df$MSSubClass)
+  
+  # Deal with some the NAs
+  
+  # LotFrontage (what does NA mean?) almost 18% of data
+  # for now just assign mean value
+  df$LotFrontage[is.na(df$LotFrontage)] <- mean(df$LotFrontage,na.rm=TRUE)
+  
+  # MasVnrArea & MasVnrType (masonry veneer type)
+  table(df$Exterior1st,df$MasVnrType,useNA='always')
+  # None type is most frequent with each exterior type w/masonry
+  df$MasVnrType[is.na(df$MasVnrType)] <- "None"
+  df$MasVnrArea[is.na(df$MasVnrArea)] <- 0
+  
+  # Electrical (NA?, only one missing)
+  df$Electrical[is.na(df$Electrical)] <- "SBrkr"
+  
+  # For these variables NA means "no"
+  # FireplaceQu - NA means no fireplace
+  # GarageType & other - NA means no garage
+  # Pool - NA means no pool
+  # Fence - NA means no fence
+  # MiscFeature - NA means no other feature
+  # Alley - NA means no alley access
+  # BsmtQuality & BsmtCond and BsmtExposure - NA means no basement
+  # BsmtFinType1, etc.
+  # add NA as "None" type
+  na_to_none <- function(x) {
+    x <- as.character(x)
+    # code as special _none
+    x[is.na(x)] <- "_none"
+    as.factor(x)
+  }
+  na_vars <- c("Fence","Alley","PoolQC","FireplaceQu","MiscFeature",
+               "BsmtQual","BsmtCond","BsmtExposure","BsmtFinType1","BsmtFinType2",
+               "GarageType","GarageFinish","GarageQual","GarageCond")
+  other_vars <- names(df)[!(names(df) %in% na_vars)]
+  tmp <- colwise(na_to_none,na_vars)(df)
+  df <- bind_cols(subset(df,select=other_vars),tmp)
+  
+  # some dummies for HasGarage or HasBasement
+  df$HasBasement <- df$BsmtQual != "_none"
+  df$HasGarage <- df$GarageQual != "_none"
+  # set garage year build to zero for now
+  df$GarageYrBlt[is.na(df$GarageYrBlt)] <- 0
+  df
+}
+
+df <- prep_data(df)
+df$LogSalePrice <- log(df$SalePrice)
+
+```
+
+
+## Jump into model building
+
+### Kitchen Sink
+
+```{r split}
+# initial split on log price (evaluation is based on RMSE of log prices)
+train_idx <- createDataPartition(df$LogSalePrice, p = 0.7, list=FALSE)
+# drop the raw SalePrice column
+train <- subset(df[train_idx,],select=-c(SalePrice,Id))
+test <- subset(df[-train_idx,],select=-c(SalePrice,Id))
+
+t1 <- Sys.time()
+rf_fit1 <- train(LogSalePrice ~ ., data=train, method = "ranger", metric= "RMSE", trControl = trainControl(method = "cv",number=5))
+t2 <- Sys.time()
+rf_fit2 <- train(LogSalePrice ~ ., data=train, method = "ranger", metric= "RMSE")
+t3 <- Sys.time()
+gbm_fit1 <- train(LogSalePrice ~ ., data=train, method = "gbm", verbose=FALSE, metric= "RMSE")
+t4 <- Sys.time()
+gbm_fit2 <- train(LogSalePrice ~ ., data=train, method = "gbm", verbose=FALSE, metric= "RMSE", trControl = trainControl(method = "cv",number=5))
+t5 <- Sys.time()
+model_trees_fit <- train(LogSalePrice ~ ., data=train, method = "cubist", metric= "RMSE", trControl = trainControl(method = "cv",number=5))
+t6 <- Sys.time()
+t5 <- Sys.time()
+xg_fit1 <- train(LogSalePrice ~ ., data=train, method = "xgbLinear", metric= "RMSE")
+t6 <- Sys.time()
+xg_fit2 <- train(LogSalePrice ~ ., data=train, method = "xgbLinear", metric= "RMSE", 
+trControl = trainControl(method = "cv",number=5))
+t7 <- Sys.time()
+
+print("ranger cv")
+t2 - t1
+rf_pred1 <- predict(rf_fit1,test)
+postResample(pred=rf_pred1,obs=test$LogSalePrice)
+
+print("ranger boot")
+t3 - t2
+rf_pred2 <- predict(rf_fit2,test)
+postResample(pred=rf_pred2,obs=test$LogSalePrice)
+
+print("gbm boot")
+t4 - t3
+gbm_pred1 <- predict(gbm_fit1,test)
+postResample(pred=gbm_pred1,obs=test$LogSalePrice)
+
+## sale prices divisible by 500? 1000? 10000? or any number
+
+print("gbm cv")
+t5 - t4
+gbm_pred2 <- predict(gbm_fit2,test)
+postResample(pred=gbm_pred2,obs=test$LogSalePrice)
+
+
+gbm_pred2_round <- exp(gbm_pred2)
+# round to nearest 1, 100, 500, 1000...and none
+#postResample(pred=log(round(gbm_pred2_round / 1) * 1),test$LogSalePrice)
+postResample(pred=log(round(gbm_pred2_round / 100) * 100),test$LogSalePrice) 
+postResample(pred=log(round(gbm_pred2_round / 500) * 500),test$LogSalePrice)
+postResample(pred=log(round(gbm_pred2_round / 1000) * 1000),test$LogSalePrice)
+#postResample(pred=log(round(gbm_pred2_round / 2500) * 2500),test$LogSalePrice)
+postResample(pred=gbm_pred2,test$LogSalePrice)
+
+model_trees_pred <- predict(model_trees_fit,test)
+postResample(pred=model_trees_pred,obs=test$LogSalePrice)
+
+print("xgboost boot")
+t6 - t5
+xg_pred1 <- predict(xg_fit1,test)
+postResample(pred=xg_pred1,obs=test$LogSalePrice)
+
+print("xgboost cv")
+t7 - t6
+xg_pred2 <- predict(xg_fit2,test)
+postResample(pred=xg_pred2,obs=test$LogSalePrice)
+
+
+tmp <- data.frame(pred=gbm_pred2,obs=test$LogSalePrice,pred2=model_trees_pred)
+ggplot(tmp,aes(x=obs))+geom_point(aes(y=pred),colour='red')+geom_point(aes(y=pred2),colour='blue')+geom_abline(slope=1)
+
+tmp %>% melt(., id.vars='obs') %>% mutate(error=value-obs) %>% ggplot(.,aes(x=error,group=variable))+geom_density(aes(colour=variable))
+
+
+
+# abs error
+tmp %>% melt(., id.vars='obs') %>% mutate(error=abs(value-obs)) %>% group_by(variable) %>% summarize(mean=mean(error),max=max(error),pct_95=quantile(error,0.95),median=median(error))
+
+# sqrd error
+tmp %>% melt(., id.vars='obs') %>% mutate(error=(value-obs)^2) %>% group_by(variable) %>% summarize(mean=mean(error),max=max(error),pct_95=quantile(error,0.95),median=median(error))
+
+# model trees seems to do better
+
+# also not bad...
+#xg_pred <- predict(xg_fit,test)
+#postResample(pred=xg_pred,obs=test$LogSalePrice)
+```
+
+### Use RF Kitchen Sink model
+```{r generate_prediction}
+test <- read.csv(file='../input/test.csv')
+test <- prep_data(test)
+# there are some additional NAs in test dataset, set to mode for categorical
+# set to 0 for basements...
+test$MSZoning[is.na(test$MSZoning)] <- "RL"
+test$Utilities[is.na(test$Utilities)] <- "AllPub"
+test$Exterior1st[is.na(test$Exterior1st)] <- "VinylSd"
+test$Exterior2nd[is.na(test$Exterior2nd)] <- "VinylSd"
+
+test$BsmtFinSF1[is.na(test$BsmtFinSF1)] <- 0
+test$BsmtFinSF2[is.na(test$BsmtFinSF2)] <- 0
+test$BsmtUnfSF[is.na(test$BsmtUnfSF)] <- 0
+test$TotalBsmtSF[is.na(test$TotalBsmtSF)] <- 0
+test$BsmtFullBath[is.na(test$BsmtFullBath)] <- 0
+test$BsmtHalfBath[is.na(test$BsmtHalfBath)] <- 0
+
+test$KitchenQual[is.na(test$KitchenQual)] <- "TA"
+test$Functional[is.na(test$Functional)] <- "Typ"
+test$GarageCars[is.na(test$GarageCars)] <- 0
+test$GarageArea[is.na(test$GarageArea)] <- 0
+
+test$SaleType[is.na(test$SaleType)] <- "WD"
+
+# deal with new factor level as hack for now
+test$MSSubClass[test$MSSubClass=="150"] <- "160"
+
+train <- subset(df,select=-SalePrice)
+rf_fit <- train(LogSalePrice ~ ., data=train, method = "ranger", metric= "RMSE")
+rf_pred <- predict(rf_fit,test)
+
+# prediction back to dollars
+final <- exp(rf_pred)
+submission <- data.frame(Id=test$Id,SalePrice=final)
+write_csv(submission,path='submission_1.csv')
+
+
+```
